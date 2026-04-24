@@ -24,25 +24,25 @@ import { createEmptyProgress } from "./src/lib/progress";
 
 const THEMES = {
   light: {
-    bg: "#f6f1ea",
-    surface: "#fffaf4",
-    surfaceMuted: "#f1e8dc",
-    ink: "#182629",
-    muted: "#667476",
-    accent: "#1b7f79",
-    accentSoft: "#e6f2f0",
-    accentText: "#155f5a",
-    danger: "#b45c49",
-    dangerSoft: "#f3e6df",
-    line: "rgba(24, 38, 41, 0.10)",
-    lineSoft: "rgba(24, 38, 41, 0.06)",
-    headerOverlay: "rgba(246, 241, 234, 0.94)",
-    footerBg: "#fffaf4",
+    bg: "#f4f7f8",
+    surface: "#ffffff",
+    surfaceMuted: "#eef3f4",
+    ink: "#122022",
+    muted: "#667477",
+    accent: "#0f7a73",
+    accentSoft: "#e0f1ee",
+    accentText: "#0c5f59",
+    danger: "#a3483e",
+    dangerSoft: "#f4e6e2",
+    line: "rgba(18, 32, 34, 0.12)",
+    lineSoft: "rgba(18, 32, 34, 0.07)",
+    headerOverlay: "rgba(244, 247, 248, 0.94)",
+    footerBg: "#ffffff",
     cardActive: "#ffffff",
-    correctSurface: "#f4efe8",
-    correctBorder: "rgba(27, 127, 121, 0.24)",
-    incorrectSurface: "#f3e6df",
-    incorrectBorder: "rgba(180, 92, 73, 0.24)",
+    correctSurface: "#eaf5f2",
+    correctBorder: "rgba(15, 122, 115, 0.26)",
+    incorrectSurface: "#f4e6e2",
+    incorrectBorder: "rgba(163, 72, 62, 0.24)",
     shadow: "#000000",
     progressIdle: "#c6cfcb"
   },
@@ -76,6 +76,7 @@ const RADIUS_OUTER_MD = 22;
 const PADDING_SECTION = 16;
 const RADIUS_INNER_MD = RADIUS_OUTER_MD - PADDING_SECTION;
 const RUN_HISTORY_STORAGE_KEY = "biss-trainer-run-history-v1";
+const CURRENT_RUN_STORAGE_KEY = "biss-trainer-current-run-v1";
 
 function de(value) {
   if (typeof value !== "string") {
@@ -123,6 +124,7 @@ function AppScreen() {
   const [completedRuns, setCompletedRuns] = useState([]);
   const [hasCapturedRun, setHasCapturedRun] = useState(false);
   const [latestRunId, setLatestRunId] = useState(null);
+  const [hasLoadedCurrentRun, setHasLoadedCurrentRun] = useState(false);
   const [hasLoadedRuns, setHasLoadedRuns] = useState(false);
   const [sectionsOpen, setSectionsOpen] = useState({
     findings: true,
@@ -183,6 +185,72 @@ function AppScreen() {
 
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCurrentRun() {
+      try {
+        const raw = await AsyncStorage.getItem(CURRENT_RUN_STORAGE_KEY);
+        if (!raw || cancelled) {
+          return;
+        }
+
+        const parsed = JSON.parse(raw);
+        const savedOrder = Array.isArray(parsed?.caseOrder)
+          ? parsed.caseOrder.filter((caseId) =>
+              CASE_LIBRARY.some((caseItem) => caseItem.id === caseId)
+            )
+          : [];
+        const missingCaseIds = CASE_LIBRARY.map((caseItem) => caseItem.id).filter(
+          (caseId) => !savedOrder.includes(caseId)
+        );
+        const nextOrder =
+          savedOrder.length > 0
+            ? [...savedOrder, ...missingCaseIds]
+            : CASE_LIBRARY.map((caseItem) => caseItem.id);
+
+        setCaseOrder(nextOrder);
+        setActiveCaseId(
+          CASE_LIBRARY.some((caseItem) => caseItem.id === parsed?.activeCaseId)
+            ? parsed.activeCaseId
+            : nextOrder[0] ?? CASE_LIBRARY[0].id
+        );
+        setProgressByCase(
+          parsed?.progressByCase && typeof parsed.progressByCase === "object"
+            ? parsed.progressByCase
+            : {}
+        );
+      } catch {
+        // Ignore invalid local progress and continue with a fresh run.
+      } finally {
+        if (!cancelled) {
+          setHasLoadedCurrentRun(true);
+        }
+      }
+    }
+
+    loadCurrentRun();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedCurrentRun) {
+      return;
+    }
+
+    AsyncStorage.setItem(
+      CURRENT_RUN_STORAGE_KEY,
+      JSON.stringify({
+        activeCaseId,
+        caseOrder,
+        progressByCase
+      })
+    ).catch(() => {});
+  }, [activeCaseId, caseOrder, hasLoadedCurrentRun, progressByCase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -598,6 +666,18 @@ function AppScreen() {
                   {CASE_LIBRARY.length} Fälle · {completedCount} abgeschlossen · {totalScore} Punkte
                 </Text>
               </View>
+              <View style={styles.summaryMetricGrid}>
+                <MetricPill
+                  styles={styles}
+                  label="Quote"
+                  value={`${Math.round((totalScore / totalPossibleScore) * 100)}%`}
+                />
+                <MetricPill
+                  styles={styles}
+                  label="Aktiv"
+                  value={de(activeCase.domain)}
+                />
+              </View>
             </View>
             
             <SectionHeader
@@ -634,7 +714,7 @@ function AppScreen() {
                 snapToAlignment="start"
                 disableIntervalMomentum
               >
-                {CASE_LIBRARY.map((caseItem) => {
+                {orderedCases.map((caseItem) => {
                   const caseProgress = getProgress(progressByCase, caseItem.id);
                   const isActive = caseItem.id === activeCase.id;
                   const caseScore = getScoreForCase(caseItem, caseProgress);
@@ -1009,6 +1089,17 @@ function InfoCell({ label, value, styles }) {
   );
 }
 
+function MetricPill({ label, value, styles }) {
+  return (
+    <View style={[styles.metricPill, IOS_CONTINUOUS]}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function PrimaryButton({ label, onPress, styles }) {
   return (
     <Pressable onPress={onPress} style={[styles.primaryButton, IOS_CONTINUOUS]}>
@@ -1187,9 +1278,12 @@ function createStyles(theme) {
     overflow: "hidden"
   },
   summaryCard: {
-    paddingTop: 10,
-    paddingBottom: 10,
-    gap: 12
+    backgroundColor: theme.surface,
+    borderRadius: RADIUS_OUTER_MD,
+    padding: 18,
+    gap: 16,
+    borderWidth: 1,
+    borderColor: theme.lineSoft
   },
   summaryCopy: {
     gap: 8
@@ -1210,6 +1304,28 @@ function createStyles(theme) {
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "600"
+  },
+  summaryMetricGrid: {
+    flexDirection: "row",
+    gap: 8
+  },
+  metricPill: {
+    flex: 1,
+    backgroundColor: theme.surfaceMuted,
+    borderRadius: RADIUS_INNER_MD,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 3
+  },
+  metricLabel: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: "600"
+  },
+  metricValue: {
+    color: theme.ink,
+    fontSize: 15,
+    fontWeight: "700"
   },
   sectionHeader: {
     flexDirection: "row",
